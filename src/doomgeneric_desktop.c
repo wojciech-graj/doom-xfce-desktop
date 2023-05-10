@@ -31,11 +31,20 @@ struct File {
 	FILE *stream;
 };
 
+struct Color {
+    uint32_t b:8;
+    uint32_t g:8;
+    uint32_t r:8;
+    uint32_t a:8;
+};
+
 static GDateTime *dt_start;
 
 static unsigned icon_res = 64;
 static unsigned iconsx;
 static unsigned iconsy;
+static unsigned header_len;
+static gchar *img_buffer;
 
 static GFile *config_file;
 static GFile *config_bak_file;
@@ -67,6 +76,8 @@ void cleanup(void)
 	g_object_unref(config_bak_file);
 
 	g_date_time_unref(dt_start);
+
+	g_free(img_buffer);
 
 	system("pkill xfdesktop && xfdesktop &");
 }
@@ -103,6 +114,8 @@ void DG_Init()
 
 	files = g_malloc(iconsx * iconsy * sizeof(struct File));
 	const gchar *desktop_dir = g_get_user_special_dir(G_USER_DIRECTORY_DESKTOP);
+	g_autofree gchar *header = g_strdup_printf("P6\n%u %u\n255\n", icon_res, icon_res);
+	header_len = strlen(header);
 
 	unsigned x, y;
 	for (y = 0; y < iconsy; y++) {
@@ -111,6 +124,7 @@ void DG_Init()
 			g_autofree char *basename = g_strdup_printf("%03u_%03u.ppm", x, y);
 			file->name = g_build_filename(desktop_dir, basename, NULL);
 			file->stream = g_fopen(file->name, "w");
+			fwrite(header, 1, header_len, file->stream);
 
 			g_key_file_set_integer(key_file, file->name, "row", y);
 			g_key_file_set_integer(key_file, file->name, "col", x + 3);
@@ -118,6 +132,7 @@ void DG_Init()
 	}
 
 	g_key_file_save_to_file(key_file, config_fname, NULL);
+	img_buffer = g_malloc(icon_res * icon_res * 3);
 
 	dt_start = g_date_time_new_now_utc();
 
@@ -128,7 +143,30 @@ void DG_Init()
 
 void DG_DrawFrame()
 {
+	struct Color *pixels = (struct Color*)DG_ScreenBuffer;
 
+	unsigned x, y;
+	for (y = 0; y < iconsy; y++) {
+		for (x = 0; x < iconsx; x++) {
+			struct File *file = &files[y * iconsx + x];
+			fseek(file->stream, header_len, SEEK_SET);
+
+			memset(img_buffer, '\0', icon_res * icon_res * 3);
+			unsigned imgx, imgy;
+			unsigned imgi = 0;
+			for (imgy = y * icon_res; imgy < MIN(y * icon_res + icon_res, DOOMGENERIC_RESY); imgy++) {
+				for (imgx = x * icon_res; imgx < MIN(x * icon_res + icon_res, DOOMGENERIC_RESX); imgx++) {
+					struct Color pix = pixels[imgy * DOOMGENERIC_RESX + imgx];
+					img_buffer[imgi++] = pix.r;
+					img_buffer[imgi++] = pix.g;
+					img_buffer[imgi++] = pix.b;
+				}
+			}
+
+			fwrite(img_buffer, 3, icon_res * icon_res, file->stream);
+			fflush(file->stream);
+		}
+	}
 }
 
 void DG_SleepMs(uint32_t ms)
