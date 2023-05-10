@@ -13,9 +13,9 @@ endif
 
 
 CC=clang  # gcc or g++
-CFLAGS+=-ggdb3 -Os
-LDFLAGS+=-Wl,--gc-sections
-CFLAGS+=-ggdb3 -Wall -DNORMALUNIX -DLINUX -DSNDSERV -D_DEFAULT_SOURCE # -DUSEASM
+CFLAGS+=-Os `pkg-config --cflags glib-2.0 gio-2.0`
+LDFLAGS+=-Wl,--gc-sections `pkg-config --libs glib-2.0 gio-2.0`
+CFLAGS+=-Wall -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE # -DUSEASM
 LIBS+=-lm -lc -lX11
 
 # subdirectory for objects
@@ -51,4 +51,3 @@ $(OBJDIR)/%.o:	%.c
 
 print:
 	@echo OBJS: $(OBJS)
-
