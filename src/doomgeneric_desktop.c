@@ -15,22 +15,25 @@
 //     Nil
 //
 
+#include "doomgeneric.h"
 #include "doomkeys.h"
 #include "i_system.h"
-#include "doomgeneric.h"
 
-#include <glib.h>
 #include <gio/gio.h>
+#include <glib.h>
 #include <glib/gstdio.h>
 
-#define UNLIKELY(x_) __builtin_expect((x_),0)
-#define CALL(stmt_, ...) do {if (UNLIKELY(stmt_)) I_Error(__VA_ARGS__);} while (0)
+#define CALL(stmt, ...)                       \
+	do {                                  \
+		if (G_UNLIKELY(stmt))         \
+			I_Error(__VA_ARGS__); \
+	} while (0)
 
 struct Color {
-	uint32_t b:8;
-	uint32_t g:8;
-	uint32_t r:8;
-	uint32_t a:8;
+	uint32_t b : 8;
+	uint32_t g : 8;
+	uint32_t r : 8;
+	uint32_t a : 8;
 };
 
 struct Key {
@@ -52,9 +55,10 @@ static gchar *img_buffer;
 static GFile *config_file;
 static GFile *config_bak_file;
 
-GArray *input_backlog;
+static GArray *input_backlog;
 
-static char **files;
+static char **fnames;
+static unsigned n_files;
 
 static GFile *input_file;
 static gchar *input_fname;
@@ -62,8 +66,7 @@ static gchar *input_fname;
 static void cleanup(void);
 static void handle_signal(int sig);
 
-#define N_KEYS 6
-static struct Key keys[N_KEYS] = {
+static struct Key keys[] = {
 	{
 		.name = "FORWARD.sh",
 		.doomKey = KEY_UPARROW,
@@ -104,27 +107,19 @@ static struct Key keys[N_KEYS] = {
 
 void handle_signal(int sig)
 {
-    exit(1);
-    (void)sig;
+	exit(1);
+	(void)sig;
 }
 
 void cleanup(void)
 {
 	unsigned i;
-	for (i = 0; i < iconsx * iconsy; i++) {
-		g_autoptr(GFile) file = g_file_new_for_path(files[i]);
+	for (i = 0; i < n_files; i++) {
+		g_autoptr(GFile) file = g_file_new_for_path(fnames[i]);
 		g_file_delete(file, NULL, NULL);
-		g_free(files[i]);
+		g_free(fnames[i]);
 	}
-	g_free(files);
-
-	const gchar *desktop_dir = g_get_user_special_dir(G_USER_DIRECTORY_DESKTOP);
-	for (i = 0; i < N_KEYS; i++) {
-		const struct Key *key = &keys[i];
-		g_autofree gchar *fname = g_build_filename(desktop_dir, key->name, NULL);
-		g_autoptr(GFile) file = g_file_new_for_path(fname);
-		g_file_delete(file, NULL, NULL);
-	}
+	g_free(fnames);
 
 	g_file_copy(config_bak_file, config_file, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
 	g_object_unref(config_file);
@@ -158,10 +153,10 @@ void DG_Init()
 	g_autoptr(GFileInfo) info = NULL;
 	gchar *config_fname = config_fname_temp;
 	if (g_file_query_file_type(config_file, G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL) == G_FILE_TYPE_SYMBOLIC_LINK) {
-		info  = g_file_query_info(config_file, G_FILE_ATTRIBUTE_STANDARD_SYMLINK_TARGET, G_FILE_QUERY_INFO_NONE, NULL, NULL);
+		info = g_file_query_info(config_file, G_FILE_ATTRIBUTE_STANDARD_SYMLINK_TARGET, G_FILE_QUERY_INFO_NONE, NULL, NULL);
 		g_free(config_fname_temp);
 		config_fname_temp = NULL;
-		config_fname = (gchar*)g_file_info_get_symlink_target(info);
+		config_fname = (gchar *)g_file_info_get_symlink_target(info);
 		g_object_unref(config_file);
 		config_file = g_file_new_for_path(config_fname);
 	}
@@ -169,20 +164,23 @@ void DG_Init()
 	g_autofree gchar *config_bak_fname = g_build_filename(config_dir, "xfce4/desktop/icons.screen.latest.rc.bak", NULL);
 	config_bak_file = g_file_new_for_path(config_bak_fname);
 
+	img_buffer = g_malloc(icon_res * icon_res * 3);
+
 	g_file_copy(config_file, config_bak_file, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
 
 	g_autoptr(GKeyFile) key_file = g_key_file_new();
 	g_key_file_load_from_file(key_file, config_fname, G_KEY_FILE_NONE, NULL);
 
-	files = g_malloc(iconsx * iconsy * sizeof(char *));
+	n_files = iconsx * iconsy + G_N_ELEMENTS(keys);
+	fnames = g_malloc(n_files * sizeof(char *));
 	const gchar *desktop_dir = g_get_user_special_dir(G_USER_DIRECTORY_DESKTOP);
 	g_autofree gchar *header = g_strdup_printf("P6\n%u %u\n255\n", icon_res, icon_res);
 	header_len = strlen(header);
 
-	unsigned x, y;
+	unsigned x, y, fi = 0;
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
-			char **fname = &files[y * iconsx + x];
+			char **fname = &fnames[fi++];
 			g_autofree gchar *basename = g_strdup_printf("%03u_%03u.ppm", x, y);
 			*fname = g_build_filename(desktop_dir, basename, NULL);
 			FILE *f = g_fopen(*fname, "w");
@@ -199,14 +197,15 @@ void DG_Init()
 	input_fname = g_file_get_path(input_file);
 
 	unsigned i;
-	for (i = 0; i < N_KEYS; i++) {
+	for (i = 0; i < G_N_ELEMENTS(keys); i++) {
 		const struct Key *key = &keys[i];
-		g_autofree gchar *fname = g_build_filename(desktop_dir, key->name, NULL);
+		gchar *fname = g_build_filename(desktop_dir, key->name, NULL);
 		FILE *file = g_fopen(fname, "w");
 		g_autofree gchar *script = g_strdup_printf("echo \"%u \" >> \"%s\"", i, input_fname);
 		fwrite(script, 1, strlen(script), file);
 		fclose(file);
 		g_chmod(fname, S_IRWXU | S_IRWXG | S_IRWXO);
+		fnames[fi++] = fname;
 
 		g_key_file_set_integer(key_file, fname, "row", iconsy + key->row);
 		g_key_file_set_integer(key_file, fname, "col", 3 + key->col);
@@ -214,8 +213,6 @@ void DG_Init()
 
 	g_key_file_save_to_file(key_file, config_fname, NULL);
 	system("pkill xfdesktop && xfdesktop &");
-
-	img_buffer = g_malloc(icon_res * icon_res * 3);
 
 	dt_start = g_date_time_new_now_utc();
 
@@ -225,12 +222,12 @@ void DG_Init()
 
 void DG_DrawFrame()
 {
-	struct Color *pixels = (struct Color*)DG_ScreenBuffer;
+	struct Color *pixels = (struct Color *)DG_ScreenBuffer;
 
 	unsigned x, y;
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
-			FILE *f = fopen(files[y * iconsx + x], "r+");
+			FILE *f = g_fopen(fnames[y * iconsx + x], "r+");
 			fseek(f, header_len, SEEK_SET);
 
 			memset(img_buffer, '\0', icon_res * icon_res * 3);
@@ -266,11 +263,10 @@ uint32_t DG_GetTicksMs()
 	return diff / 1000LL;
 }
 
-int DG_GetKey(int* pressed, unsigned char* doomKey)
+int DG_GetKey(int *pressed, unsigned char *doomKey)
 {
 	if (input_backlog->len) {
-	DG_GetKey_GOT_INPUT:
-		{
+	DG_GetKey_GOT_INPUT : {
 		unsigned char keyi = g_array_index(input_backlog, unsigned char, input_backlog->len - 1);
 		g_array_remove_index(input_backlog, input_backlog->len - 1);
 		struct Key *key = &keys[keyi];
@@ -278,15 +274,15 @@ int DG_GetKey(int* pressed, unsigned char* doomKey)
 		*pressed = key->pressed;
 		*doomKey = key->doomKey;
 		return 1;
-		}
 	}
-	FILE *file = fopen(input_fname, "r");
+	}
+	FILE *file = g_fopen(input_fname, "r");
 	unsigned char keyi;
 	while (fscanf(file, "%hhu", &keyi) != EOF)
 		g_array_append_val(input_backlog, keyi);
 	fclose(file);
 	if (input_backlog->len) {
-		file = fopen(input_fname, "w");
+		file = g_fopen(input_fname, "w");
 		fclose(file);
 		goto DG_GetKey_GOT_INPUT;
 	}
