@@ -68,37 +68,37 @@ static void handle_signal(int sig);
 
 static struct Key keys[] = {
 	{
-		.name = "FORWARD.sh",
+		.name = "FORWARD",
 		.doomKey = KEY_UPARROW,
 		.col = 1,
 		.row = 0,
 	},
 	{
-		.name = "LEFT.sh",
+		.name = "LEFT",
 		.doomKey = KEY_LEFTARROW,
 		.col = 0,
 		.row = 1,
 	},
 	{
-		.name = "DOWN.sh",
+		.name = "DOWN",
 		.doomKey = KEY_DOWNARROW,
 		.col = 1,
 		.row = 1,
 	},
 	{
-		.name = "RIGHT.sh",
+		.name = "RIGHT",
 		.doomKey = KEY_RIGHTARROW,
 		.col = 2,
 		.row = 1,
 	},
 	{
-		.name = "FIRE.sh",
+		.name = "FIRE",
 		.doomKey = KEY_FIRE,
 		.col = 3,
 		.row = 0,
 	},
 	{
-		.name = "USE.sh",
+		.name = "USE",
 		.doomKey = KEY_USE,
 		.col = 3,
 		.row = 1,
@@ -114,15 +114,23 @@ void handle_signal(int sig)
 void cleanup(void)
 {
 	unsigned i;
-	for (i = 0; i < n_files; i++) {
+	for (i = 0; i < iconsx * iconsy; i++) {
 		g_autoptr(GFile) file = g_file_new_for_path(fnames[i]);
 		g_file_delete(file, NULL, NULL);
 		g_free(fnames[i]);
 	}
+	for (; i < n_files; i++) {
+		g_autoptr(GFile) file = g_file_new_for_path(fnames[i]);
+		g_file_delete(file, NULL, NULL);
+		g_autofree gchar *active_fname = g_strconcat(fnames[i], "(ACTIVE)", NULL);
+		g_autoptr(GFile) active_file = g_file_new_for_path(active_fname);
+		g_file_delete(active_file, NULL, NULL);
+		g_free(fnames[i]);
+	}
 	g_free(fnames);
 
+	system("pkill xfdesktop && xfdesktop &");
 	usleep(G_USEC_PER_SEC);
-
 	g_file_copy(config_bak_file, config_file, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
 	system("pkill xfdesktop && xfdesktop &");
 	g_object_unref(config_file);
@@ -142,6 +150,7 @@ void DG_Init()
 {
 	iconsx = (DOOMGENERIC_RESX + icon_res - 1) / icon_res;
 	iconsy = (DOOMGENERIC_RESY + icon_res - 1) / icon_res;
+	img_buffer = g_malloc(icon_res * icon_res * 3);
 
 	input_backlog = g_array_new(FALSE, FALSE, 1);
 
@@ -165,28 +174,27 @@ void DG_Init()
 	g_autofree gchar *config_bak_fname = g_build_filename(config_dir, "xfce4/desktop/icons.screen.latest.rc.bak", NULL);
 	config_bak_file = g_file_new_for_path(config_bak_fname);
 
-	img_buffer = g_malloc(icon_res * icon_res * 3);
-
 	g_file_copy(config_file, config_bak_file, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
 
 	g_autoptr(GKeyFile) key_file = g_key_file_new();
 	g_key_file_load_from_file(key_file, config_fname, G_KEY_FILE_NONE, NULL);
+
+	gchar **groups = g_key_file_get_groups(key_file, NULL);
+	unsigned i;
+	gchar **group;
+	for (group = groups + 1; *group; group++) {
+		unsigned col = g_key_file_get_integer(key_file, *group, "col", NULL);
+		printf("%s:%u\n", *group, col);
+		if (col < iconsx + 1)
+			g_key_file_set_integer(key_file, *group, "col", col + iconsx + 1);
+	}
+	g_strfreev(groups);
 
 	n_files = iconsx * iconsy + G_N_ELEMENTS(keys);
 	fnames = g_malloc(n_files * sizeof(char *));
 	const gchar *desktop_dir = g_get_user_special_dir(G_USER_DIRECTORY_DESKTOP);
 	g_autofree gchar *header = g_strdup_printf("P6\n%u %u\n255\n", icon_res, icon_res);
 	header_len = strlen(header);
-
-	gsize n_groups;
-	gchar **groups = g_key_file_get_groups(key_file, &n_groups);
-	unsigned i;
-	for (i = 1; i < n_groups; i++) {
-		unsigned col = g_key_file_get_integer(key_file, groups[i], "col", NULL);
-		if (col < iconsx + 1)
-			g_key_file_set_integer(key_file, groups[i], "col", col + iconsx + 1);
-	}
-	g_strfreev(groups);
 
 	unsigned x, y, fi = 0;
 	for (y = 0; y < iconsy; y++) {
@@ -211,7 +219,7 @@ void DG_Init()
 		const struct Key *key = &keys[i];
 		gchar *fname = g_build_filename(desktop_dir, key->name, NULL);
 		FILE *file = g_fopen(fname, "w");
-		g_autofree gchar *script = g_strdup_printf("echo \"%u \" >> \"%s\"", i, input_fname);
+		g_autofree gchar *script = g_strdup_printf("#!/bin/bash\necho \"%u \" >> \"%s\"", i, input_fname);
 		fwrite(script, 1, strlen(script), file);
 		fclose(file);
 		g_chmod(fname, S_IRWXU | S_IRWXG | S_IRWXO);
@@ -283,6 +291,12 @@ int DG_GetKey(int *pressed, unsigned char *doomKey)
 		key->pressed = !key->pressed;
 		*pressed = key->pressed;
 		*doomKey = key->doomKey;
+		gchar *orig_fname = fnames[iconsx * iconsy + keyi];
+		g_autofree gchar *active_fname = g_strconcat(orig_fname, "(ACTIVE)", NULL);
+		if (key->pressed)
+			g_rename(orig_fname, active_fname);
+		else
+			g_rename(active_fname, orig_fname);
 		return 1;
 	}
 	}
