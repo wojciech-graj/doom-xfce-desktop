@@ -32,15 +32,23 @@ struct File {
 };
 
 struct Color {
-    uint32_t b:8;
-    uint32_t g:8;
-    uint32_t r:8;
-    uint32_t a:8;
+	uint32_t b:8;
+	uint32_t g:8;
+	uint32_t r:8;
+	uint32_t a:8;
+};
+
+struct Key {
+	const char *name;
+	const unsigned char doomKey;
+	const unsigned col;
+	const unsigned row;
+	gboolean pressed;
 };
 
 static GDateTime *dt_start;
 
-static unsigned icon_res = 64;
+static unsigned icon_res = 32;
 static unsigned iconsx;
 static unsigned iconsy;
 static unsigned header_len;
@@ -49,10 +57,55 @@ static gchar *img_buffer;
 static GFile *config_file;
 static GFile *config_bak_file;
 
+GArray *input_backlog;
+
 static struct File *files;
+
+static GFile *input_file;
+static gchar *input_fname;
 
 static void cleanup(void);
 static void handle_signal(int sig);
+
+#define N_KEYS 6
+static struct Key keys[N_KEYS] = {
+	{
+		.name = "FORWARD.sh",
+		.doomKey = KEY_UPARROW,
+		.col = 1,
+		.row = 0,
+	},
+	{
+		.name = "LEFT.sh",
+		.doomKey = KEY_LEFTARROW,
+		.col = 0,
+		.row = 1,
+	},
+	{
+		.name = "DOWN.sh",
+		.doomKey = KEY_DOWNARROW,
+		.col = 1,
+		.row = 1,
+	},
+	{
+		.name = "RIGHT.sh",
+		.doomKey = KEY_RIGHTARROW,
+		.col = 2,
+		.row = 1,
+	},
+	{
+		.name = "FIRE.sh",
+		.doomKey = KEY_FIRE,
+		.col = 3,
+		.row = 0,
+	},
+	{
+		.name = "USE.sh",
+		.doomKey = KEY_USE,
+		.col = 3,
+		.row = 1,
+	},
+};
 
 void handle_signal(int sig)
 {
@@ -71,6 +124,14 @@ void cleanup(void)
 	}
 	g_free(files);
 
+	const gchar *desktop_dir = g_get_user_special_dir(G_USER_DIRECTORY_DESKTOP);
+	for (i = 0; i < N_KEYS; i++) {
+		const struct Key *key = &keys[i];
+		g_autofree gchar *fname = g_build_filename(desktop_dir, key->name, NULL);
+		g_autoptr(GFile) file = g_file_new_for_path(fname);
+		g_file_delete(file, NULL, NULL);
+	}
+
 	g_file_copy(config_bak_file, config_file, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
 	g_object_unref(config_file);
 	g_object_unref(config_bak_file);
@@ -79,6 +140,11 @@ void cleanup(void)
 
 	g_free(img_buffer);
 
+	g_object_unref(input_file);
+	g_free(input_fname);
+
+	g_array_free(input_backlog, TRUE);
+
 	system("pkill xfdesktop && xfdesktop &");
 }
 
@@ -86,6 +152,8 @@ void DG_Init()
 {
 	iconsx = (DOOMGENERIC_RESX + icon_res - 1) / icon_res;
 	iconsy = (DOOMGENERIC_RESY + icon_res - 1) / icon_res;
+
+	input_backlog = g_array_new(FALSE, FALSE, 1);
 
 	const gchar *config_dir = g_get_user_config_dir();
 	g_autofree gchar *config_fname_temp = g_build_filename(config_dir, "xfce4/desktop/icons.screen.latest.rc", NULL);
@@ -121,7 +189,7 @@ void DG_Init()
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
 			struct File *file = &files[y * iconsx + x];
-			g_autofree char *basename = g_strdup_printf("%03u_%03u.ppm", x, y);
+			g_autofree gchar *basename = g_strdup_printf("%03u_%03u.ppm", x, y);
 			file->name = g_build_filename(desktop_dir, basename, NULL);
 			file->stream = g_fopen(file->name, "w");
 			fwrite(header, 1, header_len, file->stream);
@@ -131,12 +199,31 @@ void DG_Init()
 		}
 	}
 
+	g_autoptr(GFileIOStream) input_iostream;
+	input_file = g_file_new_tmp(NULL, &input_iostream, NULL);
+	input_fname = g_file_get_path(input_file);
+
+	unsigned i;
+	for (i = 0; i < N_KEYS; i++) {
+		const struct Key *key = &keys[i];
+		g_autofree gchar *fname = g_build_filename(desktop_dir, key->name, NULL);
+		FILE *file = g_fopen(fname, "w");
+		g_autofree gchar *script = g_strdup_printf("echo \"%u \" >> \"%s\"", i, input_fname);
+		fwrite(script, 1, strlen(script), file);
+		fclose(file);
+		g_chmod(fname, S_IRWXU | S_IRWXG | S_IRWXO);
+
+		g_key_file_set_integer(key_file, fname, "row", iconsy + key->row);
+		g_key_file_set_integer(key_file, fname, "col", 3 + key->col);
+	}
+
 	g_key_file_save_to_file(key_file, config_fname, NULL);
+	system("pkill xfdesktop && xfdesktop &");
+
 	img_buffer = g_malloc(icon_res * icon_res * 3);
 
 	dt_start = g_date_time_new_now_utc();
 
-	system("pkill xfdesktop && xfdesktop &");
 	atexit(&cleanup);
 	signal(SIGINT, &handle_signal);
 }
@@ -184,6 +271,29 @@ uint32_t DG_GetTicksMs()
 
 int DG_GetKey(int* pressed, unsigned char* doomKey)
 {
+	if (input_backlog->len) {
+	DG_GetKey_GOT_INPUT:
+		{
+		unsigned char keyi = g_array_index(input_backlog, unsigned char, input_backlog->len - 1);
+		g_array_remove_index(input_backlog, input_backlog->len - 1);
+		struct Key *key = &keys[keyi];
+		key->pressed = !key->pressed;
+		*pressed = key->pressed;
+		*doomKey = key->doomKey;
+		return 1;
+		}
+	}
+	FILE *file = fopen(input_fname, "r");
+	unsigned char keyi;
+	while (fscanf(file, "%hhu", &keyi) != EOF)
+		g_array_append_val(input_backlog, keyi);
+	fclose(file);
+	if (input_backlog->len) {
+		file = fopen(input_fname, "w");
+		fclose(file);
+		puts("HERE");
+		goto DG_GetKey_GOT_INPUT;
+	}
 	return 0;
 }
 
