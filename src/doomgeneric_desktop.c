@@ -38,6 +38,7 @@
 		typeof(invoc) res = (invoc);                             \
 		if (G_UNLIKELY(res cond)) {                              \
 			I_Error("Error %d: %s", errno, strerror(errno)); \
+			exit(errno);                                     \
 		}                                                        \
 		res;                                                     \
 	})
@@ -47,6 +48,7 @@
 		typeof(invoc) res = (invoc);       \
 		if (G_UNLIKELY(res cond)) {        \
 			I_Error("Error: %s", msg); \
+			exit(1);                   \
 		}                                  \
 		res;                               \
 	})
@@ -58,6 +60,7 @@
 		if (G_UNLIKELY(error)) {                                               \
 			I_Error("Error: %s\n", error->message);                        \
 			g_error_free(error);                                           \
+			exit(1);                                                       \
 		}                                                                      \
 		res;                                                                   \
 	})
@@ -115,7 +118,7 @@ static struct Key keys[] = {
 		.row = 1,
 	},
 	{
-		.name = "DOWN",
+		.name = "BACKWARD",
 		.doomKey = KEY_DOWNARROW,
 		.col = 1,
 		.row = 1,
@@ -129,12 +132,24 @@ static struct Key keys[] = {
 	{
 		.name = "FIRE",
 		.doomKey = KEY_FIRE,
-		.col = 3,
+		.col = 0,
 		.row = 0,
 	},
 	{
 		.name = "USE",
 		.doomKey = KEY_USE,
+		.col = 2,
+		.row = 0,
+	},
+	{
+		.name = "ENTER",
+		.doomKey = KEY_ENTER,
+		.col = 3,
+		.row = 0,
+	},
+	{
+		.name = "ESCAPE",
+		.doomKey = KEY_ESCAPE,
 		.col = 3,
 		.row = 1,
 	},
@@ -308,8 +323,8 @@ void DG_DrawFrame()
 				}
 			}
 
-			CALL_ERRNO(fwrite(img_buffer, 3, icon_res * icon_res, f), != 3 * icon_res * icon_res);
-			fclose(f);
+			CALL_ERRNO(fwrite(img_buffer, 3, icon_res * icon_res, f), != icon_res * icon_res);
+			CALL_ERRNO(fclose(f), == EOF);
 		}
 	}
 
