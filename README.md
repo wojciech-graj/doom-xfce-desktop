@@ -36,3 +36,11 @@ To toggle one of the game's inputs, execute the appropriate bash script that is 
 #### Quitting
 
 To terminate the program, send the SIGINT signal once (e.g. by pressing `C-c`) and wait 1 second.
+
+#### Reviving your DE
+
+Xfce can sometimes hang during the program's execution. To fix it, terminate the program, then call
+```
+pkill xfdesktop
+xfdesktop &
+```
