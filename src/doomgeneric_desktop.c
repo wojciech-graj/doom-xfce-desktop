@@ -121,7 +121,10 @@ void cleanup(void)
 	}
 	g_free(fnames);
 
+	usleep(G_USEC_PER_SEC);
+
 	g_file_copy(config_bak_file, config_file, G_FILE_COPY_OVERWRITE, NULL, NULL, NULL, NULL);
+	system("pkill xfdesktop && xfdesktop &");
 	g_object_unref(config_file);
 	g_object_unref(config_bak_file);
 
@@ -133,8 +136,6 @@ void cleanup(void)
 	g_free(input_fname);
 
 	g_array_free(input_backlog, TRUE);
-
-	system("pkill xfdesktop && xfdesktop &");
 }
 
 void DG_Init()
@@ -177,18 +178,28 @@ void DG_Init()
 	g_autofree gchar *header = g_strdup_printf("P6\n%u %u\n255\n", icon_res, icon_res);
 	header_len = strlen(header);
 
+	gsize n_groups;
+	gchar **groups = g_key_file_get_groups(key_file, &n_groups);
+	unsigned i;
+	for (i = 1; i < n_groups; i++) {
+		unsigned col = g_key_file_get_integer(key_file, groups[i], "col", NULL);
+		if (col < iconsx + 1)
+			g_key_file_set_integer(key_file, groups[i], "col", col + iconsx + 1);
+	}
+	g_strfreev(groups);
+
 	unsigned x, y, fi = 0;
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
 			char **fname = &fnames[fi++];
-			g_autofree gchar *basename = g_strdup_printf("%03u_%03u.ppm", x, y);
+			g_autofree gchar *basename = g_strdup_printf("%c%c.ppm", x + 'a', y + 'a');
 			*fname = g_build_filename(desktop_dir, basename, NULL);
 			FILE *f = g_fopen(*fname, "w");
 			fwrite(header, 1, header_len, f);
 			fclose(f);
 
 			g_key_file_set_integer(key_file, *fname, "row", y);
-			g_key_file_set_integer(key_file, *fname, "col", x + 3);
+			g_key_file_set_integer(key_file, *fname, "col", x);
 		}
 	}
 
@@ -196,7 +207,6 @@ void DG_Init()
 	input_file = g_file_new_tmp(NULL, &input_iostream, NULL);
 	input_fname = g_file_get_path(input_file);
 
-	unsigned i;
 	for (i = 0; i < G_N_ELEMENTS(keys); i++) {
 		const struct Key *key = &keys[i];
 		gchar *fname = g_build_filename(desktop_dir, key->name, NULL);
@@ -208,7 +218,7 @@ void DG_Init()
 		fnames[fi++] = fname;
 
 		g_key_file_set_integer(key_file, fname, "row", iconsy + key->row);
-		g_key_file_set_integer(key_file, fname, "col", 3 + key->col);
+		g_key_file_set_integer(key_file, fname, "col", key->col);
 	}
 
 	g_key_file_save_to_file(key_file, config_fname, NULL);
