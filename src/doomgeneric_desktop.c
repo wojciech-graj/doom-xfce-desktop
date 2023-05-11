@@ -18,6 +18,7 @@
 #include "doomgeneric.h"
 #include "doomkeys.h"
 #include "i_system.h"
+#include "m_argv.h"
 
 #include <gio/gio.h>
 #include <glib.h>
@@ -30,26 +31,26 @@
 	} while (0)
 
 struct Color {
-	uint32_t b : 8;
-	uint32_t g : 8;
-	uint32_t r : 8;
-	uint32_t a : 8;
+	guint32 b : 8;
+	guint32 g : 8;
+	guint32 r : 8;
+	guint32 a : 8;
 };
 
 struct Key {
-	const char *name;
+	const gchar *name;
 	const unsigned char doomKey;
-	const unsigned col;
-	const unsigned row;
+	const guint col;
+	const guint row;
 	gboolean pressed;
 };
 
 static GDateTime *dt_start;
 
-static unsigned icon_res = 64;
-static unsigned iconsx;
-static unsigned iconsy;
-static unsigned header_len;
+static guint icon_res = 64;
+static guint iconsx;
+static guint iconsy;
+static guint header_len;
 static gchar *img_buffer;
 
 static GFile *config_file;
@@ -58,10 +59,12 @@ static GFile *config_bak_file;
 static GArray *input_backlog;
 
 static char **fnames;
-static unsigned n_files;
+static guint n_files;
 
 static GFile *input_file;
 static gchar *input_fname;
+
+static guint frame_delay = 400;
 
 static void cleanup(void);
 static void handle_signal(int sig);
@@ -113,7 +116,7 @@ void handle_signal(int sig)
 
 void cleanup(void)
 {
-	unsigned i;
+	guint i;
 	for (i = 0; i < iconsx * iconsy; i++) {
 		g_autoptr(GFile) file = g_file_new_for_path(fnames[i]);
 		g_file_delete(file, NULL, NULL);
@@ -148,6 +151,13 @@ void cleanup(void)
 
 void DG_Init()
 {
+	int argi = M_CheckParmWithArgs("-res", 1);
+	if (argi > 0)
+		icon_res = atoi(myargv[argi + 1]);
+	argi = M_CheckParmWithArgs("-delay", 1);
+	if (argi > 0)
+		frame_delay = atoi(myargv[argi + 1]);
+
 	iconsx = (DOOMGENERIC_RESX + icon_res - 1) / icon_res;
 	iconsy = (DOOMGENERIC_RESY + icon_res - 1) / icon_res;
 	img_buffer = g_malloc(icon_res * icon_res * 3);
@@ -180,10 +190,10 @@ void DG_Init()
 	g_key_file_load_from_file(key_file, config_fname, G_KEY_FILE_NONE, NULL);
 
 	gchar **groups = g_key_file_get_groups(key_file, NULL);
-	unsigned i;
+	guint i;
 	gchar **group;
 	for (group = groups + 1; *group; group++) {
-		unsigned col = g_key_file_get_integer(key_file, *group, "col", NULL);
+		guint col = g_key_file_get_integer(key_file, *group, "col", NULL);
 		printf("%s:%u\n", *group, col);
 		if (col < iconsx + 1)
 			g_key_file_set_integer(key_file, *group, "col", col + iconsx + 1);
@@ -196,7 +206,7 @@ void DG_Init()
 	g_autofree gchar *header = g_strdup_printf("P6\n%u %u\n255\n", icon_res, icon_res);
 	header_len = strlen(header);
 
-	unsigned x, y, fi = 0;
+	guint x, y, fi = 0;
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
 			char **fname = &fnames[fi++];
@@ -242,21 +252,21 @@ void DG_DrawFrame()
 {
 	struct Color *pixels = (struct Color *)DG_ScreenBuffer;
 
-	unsigned x, y;
+	guint x, y;
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
 			FILE *f = g_fopen(fnames[y * iconsx + x], "r+");
 			fseek(f, header_len, SEEK_SET);
 
 			memset(img_buffer, '\0', icon_res * icon_res * 3);
-			unsigned imgx, imgy;
-			unsigned imgi = 0;
-			for (imgy = y * icon_res; imgy < MIN(y * icon_res + icon_res, DOOMGENERIC_RESY); imgy++) {
-				for (imgx = x * icon_res; imgx < MIN(x * icon_res + icon_res, DOOMGENERIC_RESX); imgx++) {
-					struct Color pix = pixels[imgy * DOOMGENERIC_RESX + imgx];
-					img_buffer[imgi++] = pix.r;
-					img_buffer[imgi++] = pix.g;
-					img_buffer[imgi++] = pix.b;
+			guint imgx, imgy;
+			for (imgy = 0; imgy < MIN(icon_res, DOOMGENERIC_RESY - y * icon_res); imgy++) {
+				for (imgx = 0; imgx < MIN(icon_res, DOOMGENERIC_RESX - x * icon_res); imgx++) {
+					struct Color pix = pixels[(y * icon_res + imgy) * DOOMGENERIC_RESX + (x * icon_res + imgx)];
+					guint imgi = (imgy * icon_res + imgx) * 3;
+					img_buffer[imgi] = pix.r;
+					img_buffer[imgi + 1] = pix.g;
+					img_buffer[imgi + 2] = pix.b;
 				}
 			}
 
@@ -265,7 +275,7 @@ void DG_DrawFrame()
 		}
 	}
 
-	g_usleep(400000);
+	g_usleep(frame_delay * 1000UL);
 }
 
 void DG_SleepMs(uint32_t ms)
