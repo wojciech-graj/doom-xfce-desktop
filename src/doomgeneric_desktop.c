@@ -26,11 +26,6 @@
 #define UNLIKELY(x_) __builtin_expect((x_),0)
 #define CALL(stmt_, ...) do {if (UNLIKELY(stmt_)) I_Error(__VA_ARGS__);} while (0)
 
-struct File {
-	gchar *name;
-	FILE *stream;
-};
-
 struct Color {
 	uint32_t b:8;
 	uint32_t g:8;
@@ -48,7 +43,7 @@ struct Key {
 
 static GDateTime *dt_start;
 
-static unsigned icon_res = 32;
+static unsigned icon_res = 64;
 static unsigned iconsx;
 static unsigned iconsy;
 static unsigned header_len;
@@ -59,7 +54,7 @@ static GFile *config_bak_file;
 
 GArray *input_backlog;
 
-static struct File *files;
+static char **files;
 
 static GFile *input_file;
 static gchar *input_fname;
@@ -117,10 +112,9 @@ void cleanup(void)
 {
 	unsigned i;
 	for (i = 0; i < iconsx * iconsy; i++) {
-		g_autoptr(GFile) file = g_file_new_for_path(files[i].name);
-		fclose(files[i].stream);
+		g_autoptr(GFile) file = g_file_new_for_path(files[i]);
 		g_file_delete(file, NULL, NULL);
-		g_free(files[i].name);
+		g_free(files[i]);
 	}
 	g_free(files);
 
@@ -180,7 +174,7 @@ void DG_Init()
 	g_autoptr(GKeyFile) key_file = g_key_file_new();
 	g_key_file_load_from_file(key_file, config_fname, G_KEY_FILE_NONE, NULL);
 
-	files = g_malloc(iconsx * iconsy * sizeof(struct File));
+	files = g_malloc(iconsx * iconsy * sizeof(char *));
 	const gchar *desktop_dir = g_get_user_special_dir(G_USER_DIRECTORY_DESKTOP);
 	g_autofree gchar *header = g_strdup_printf("P6\n%u %u\n255\n", icon_res, icon_res);
 	header_len = strlen(header);
@@ -188,14 +182,15 @@ void DG_Init()
 	unsigned x, y;
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
-			struct File *file = &files[y * iconsx + x];
+			char **fname = &files[y * iconsx + x];
 			g_autofree gchar *basename = g_strdup_printf("%03u_%03u.ppm", x, y);
-			file->name = g_build_filename(desktop_dir, basename, NULL);
-			file->stream = g_fopen(file->name, "w");
-			fwrite(header, 1, header_len, file->stream);
+			*fname = g_build_filename(desktop_dir, basename, NULL);
+			FILE *f = g_fopen(*fname, "w");
+			fwrite(header, 1, header_len, f);
+			fclose(f);
 
-			g_key_file_set_integer(key_file, file->name, "row", y);
-			g_key_file_set_integer(key_file, file->name, "col", x + 3);
+			g_key_file_set_integer(key_file, *fname, "row", y);
+			g_key_file_set_integer(key_file, *fname, "col", x + 3);
 		}
 	}
 
@@ -235,8 +230,8 @@ void DG_DrawFrame()
 	unsigned x, y;
 	for (y = 0; y < iconsy; y++) {
 		for (x = 0; x < iconsx; x++) {
-			struct File *file = &files[y * iconsx + x];
-			fseek(file->stream, header_len, SEEK_SET);
+			FILE *f = fopen(files[y * iconsx + x], "r+");
+			fseek(f, header_len, SEEK_SET);
 
 			memset(img_buffer, '\0', icon_res * icon_res * 3);
 			unsigned imgx, imgy;
@@ -250,10 +245,12 @@ void DG_DrawFrame()
 				}
 			}
 
-			fwrite(img_buffer, 3, icon_res * icon_res, file->stream);
-			fflush(file->stream);
+			fwrite(img_buffer, 3, icon_res * icon_res, f);
+			fclose(f);
 		}
 	}
+
+	g_usleep(400000);
 }
 
 void DG_SleepMs(uint32_t ms)
@@ -291,7 +288,6 @@ int DG_GetKey(int* pressed, unsigned char* doomKey)
 	if (input_backlog->len) {
 		file = fopen(input_fname, "w");
 		fclose(file);
-		puts("HERE");
 		goto DG_GetKey_GOT_INPUT;
 	}
 	return 0;
